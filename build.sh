@@ -3,8 +3,18 @@
 #
 # 依赖：javac(JDK11+) / aapt2 / d8 / zipalign / apksigner / android.jar(platform 34)
 # 首次构建会从 Maven Central 拉 libxposed api-102.0.0.aar（没有国内镜像，约 30KB）
+#
+# 用法：
+#   ./build.sh                 开发构建，产物进 out/（不入库）
+#   ./build.sh release         发布构建，产物直接进 release/（入库）
+#
+# 发布构建必须指到正式密钥，否则会用 debug 证书覆盖 release/ 里的正式包：
+#   AFB_KS=~/afb.jks AFB_KS_PASS=xxx AFB_KS_ALIAS=afb AFB_KS_KEYPASS=xxx ./build.sh release
 set -e
 cd "$(dirname "$0")"
+
+OUT_DIR=${1:-out}
+VER=2.0
 
 SDK=${ANDROID_SDK:-/opt/android-sdk}
 BT="$SDK/build-tools/36.0.0"
@@ -12,7 +22,7 @@ AJAR="$SDK/platforms/android-34/android.jar"
 AAR=libs/libxposed-102.aar
 XAPI=libs/aar/classes.jar
 
-mkdir -p libs out
+mkdir -p libs "$OUT_DIR"
 
 # 1) 拉依赖
 if [ ! -f "$XAPI" ]; then
@@ -56,8 +66,18 @@ KS_PASS=${AFB_KS_PASS:-android}
 KS_ALIAS=${AFB_KS_ALIAS:-androiddebugkey}
 KS_KEYPASS=${AFB_KS_KEYPASS:-android}
 
-apksigner sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_KEYPASS" \
-  --ks-key-alias "$KS_ALIAS" --out out/AntiFraudBlock-2.0.apk build2/aligned.apk
+if [ "$OUT_DIR" = "release" ] && [ -z "$AFB_KS" ]; then
+  echo "!! 发布构建没指定 AFB_KS，将用 debug 证书覆盖 release/ 里的正式包" >&2
+  echo "!! 确认要这样就用 AFB_KS_ALLOW_DEBUG=1 ./build.sh release" >&2
+  [ "${AFB_KS_ALLOW_DEBUG:-0}" = "1" ] || exit 1
+fi
 
-ls -la out/AntiFraudBlock-2.0.apk
-echo "OK -> out/AntiFraudBlock-2.0.apk"
+APK="$OUT_DIR/AntiFraudBlock-$VER.apk"
+rm -f "$APK"
+apksigner sign --ks "$KS" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_KEYPASS" \
+  --ks-key-alias "$KS_ALIAS" --out "$APK" build2/aligned.apk
+
+ls -la "$APK"
+md5sum "$APK"
+apksigner verify --print-certs "$APK" 2>/dev/null | head -2
+echo "OK -> $APK"

@@ -117,18 +117,27 @@ am force-stop com.coloros.phonemanager
 需要 `javac(11+)`、`aapt2`、`d8`、`zipalign`、`apksigner`、`android.jar(platform 34)`。
 `libxposed api 102` 首次构建自动从 Maven Central 拉（约 30KB）。
 
-签名默认用 `~/.android/debug.keystore`，可用环境变量覆盖：
+### 构建模式与签名（重要）
 
 ```bash
-AFB_KS=/path/ks.jks AFB_KS_PASS=xxx AFB_KS_ALIAS=afb AFB_KS_KEYPASS=xxx ./build.sh
+./build.sh                  # 开发构建 → out/（不进 git）
+./build.sh release          # 发布构建 → release/（进 git，随仓库分发）
 ```
 
-### 签名说明（重要）
+`release/` 里的包用**正式密钥**签名，密钥不入库。发布构建必须显式指定：
 
-- `release/AntiFraudBlock-2.0.apk` 用的是**本机专用密钥**（`CN=AntiFraudBlock, O=ETA, C=CN`，证书 SHA-256 `1ce9c415…36df`），该密钥不入库。
-- 直接 `./build.sh` 重建出来的是 **Android Debug** 证书（`b0d023e8…faa2`），和 `release/` 里那个**签名不同**。
-- 所以：从 `release/` 装过的机器，装重建版必须先 `adb uninstall com.eta.afb`（签名不同不能覆盖安装），重装后还要在 LSPosed 里重新勾作用域。
-- 想让自己重建的包能直接覆盖升级，就用 `AFB_KS` 指向同一个 jks。
+```bash
+AFB_KS=~/afb-release.jks AFB_KS_PASS=xxx AFB_KS_ALIAS=afb AFB_KS_KEYPASS=xxx ./build.sh release
+```
+
+没指定 `AFB_KS` 就跑 `release` 时，脚本会**拒绝执行**并在 stderr 提示（防止 debug 证书覆盖正式包）；确实要用 debug 证书覆盖，加 `AFB_KS_ALLOW_DEBUG=1`。
+
+| | 证书 DN | 证书 SHA-256 |
+|---|---|---|
+| `release/` 正式包 | `CN=AntiFraudBlock, O=ETA, C=CN` | `46d15cd9…32d5c1` |
+| `./build.sh` 默认 | `C=US, O=Android, CN=Android Debug` | `b0d023e8…36faa2` |
+
+两者**签名不同，不能互相覆盖安装**。装过 `release/` 包的机器装重建版要先 `adb uninstall com.eta.afb`，重装后在 LSPosed 里重新勾作用域。
 
 目录：
 
@@ -140,8 +149,11 @@ module/                       libxposed modern 模块源（当前版本）
   res/values/strings.xml
 legacy/v1.0-xposed82/         最初试的 legacy Xposed API 82 版本（被 LSPosed 判为
                               非 modern 模块、默认 disabled，已废弃，仅留档）
-release/                      已签名产物
-build.sh
+release/                      已签名发布产物（入库）
+out/                          开发构建产物（.gitignore）
+build.sh                      构建脚本
+push.sh                       推送脚本（qufz 部署密钥）
+docs/REVERSING.md             逆向取证记录
 ```
 
 ---
