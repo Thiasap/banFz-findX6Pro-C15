@@ -123,6 +123,13 @@ am force-stop com.coloros.phonemanager
 AFB_KS=/path/ks.jks AFB_KS_PASS=xxx AFB_KS_ALIAS=afb AFB_KS_KEYPASS=xxx ./build.sh
 ```
 
+### 签名说明（重要）
+
+- `release/AntiFraudBlock-2.0.apk` 用的是**本机专用密钥**（`CN=AntiFraudBlock, O=ETA, C=CN`，证书 SHA-256 `1ce9c415…36df`），该密钥不入库。
+- 直接 `./build.sh` 重建出来的是 **Android Debug** 证书（`b0d023e8…faa2`），和 `release/` 里那个**签名不同**。
+- 所以：从 `release/` 装过的机器，装重建版必须先 `adb uninstall com.eta.afb`（签名不同不能覆盖安装），重装后还要在 LSPosed 里重新勾作用域。
+- 想让自己重建的包能直接覆盖升级，就用 `AFB_KS` 指向同一个 jks。
+
 目录：
 
 ```text
