@@ -1,0 +1,12 @@
+build/
+build2/
+stage/
+stage2/
+libs/aar/
+*.apk
+!release/*.apk
+*.idsig
+ks.jks
+.gradle/
+.idea/
+*.iml
