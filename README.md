@@ -108,6 +108,39 @@ am force-stop com.coloros.phonemanager
 
 ---
 
+## 自测：确认拦截真的生效
+
+```bash
+./selftest.sh            # 只检查装配与本地功能（不动屏幕）
+./selftest.sh --active   # 额外打开反诈页产生真实事件
+```
+
+脚本在设备上 root shell 里跑（`adb shell sh /path/selftest.sh`），做三段检查，全过退出码 0：
+
+**A. 装配** —— `lspctl` 查模块启用状态与作用域；强停手机管家后冷启动，轮询 logcat 最多 15 秒，核对三处 hook 是否都报告就位。
+
+**B. 拦截** —— 打开 `SecurityHomeActivity`，统计 `hit silence` 行数。实测样例：
+
+```text
+OK   命中 1 次拦截
+     11-04 14:16:54.390  7216  7216 I AntiFraudBlock: hit silence com.oplus.phonemanager.aivoicecalldetect.utils.AiDetectStatistics#h/3
+     sink 层吞掉的 TrackApi 事件：0 条
+     （为 0 说明反诈埋点在 AiDetectStatistics 层就被挡在源头，根本没走到 TrackApi.E，属正常）
+```
+
+`sink 层 = 0` 是**预期**而不是故障：源头层已经短路，`TrackApi.E` 兜底层没机会触发。它只在手机管家换了新埋点入口、而事件名仍命中前缀时才会计数。
+
+**C. 本地功能** —— 反诈页在任务栈存活、crash 缓冲区无手机管家记录、本地反诈配置文件仍在。
+
+### 两个真实踩过的坑（已在脚本里修掉）
+
+| 坑 | 症状 | 修法 |
+|---|---|---|
+| LSPosed 把模块日志镜像成 `LSPosedFramework` 行 | `grep -c` 把命中数算成 2 倍 | 计数前加 `grep -v LSPosedFramework` |
+| 冷启动 + 日志落盘有延迟，固定 `sleep 6` 不够 | 偶发 **A 段全 FAIL**，但 B 段能看到 `hit silence`（自相矛盾） | 改成轮询到出现 `kept local` 或超时 15 秒 |
+
+---
+
 ## 构建
 
 ```bash
@@ -153,6 +186,7 @@ release/                      已签名发布产物（入库）
 out/                          开发构建产物（.gitignore）
 build.sh                      构建脚本
 push.sh                       推送脚本（qufz 部署密钥）
+selftest.sh                   上机自测（装配 / 拦截 / 本地功能三段核对）
 docs/REVERSING.md             逆向取证记录
 ```
 
