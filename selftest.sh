@@ -2,8 +2,8 @@
 # 自测：确认拦截确实生效，且本地反诈功能没被误伤
 #
 # 三段检查：
-#   A. 装配 —— 模块是否注入、三处 hook 是否挂上
-#   B. 拦截 —— 反诈页/开关操作时是否命中，且没有反诈事件漏到 TrackApi
+#   A. 装配 —— 模块是否注入、各 hook 是否挂上（兼容 17.1.6 / 17.7.2 两代出口）
+#   B. 拦截 —— 反诈页/开关操作时是否命中，以及 sink 层吞掉的事件数
 #   C. 本地功能 —— 反诈页正常打开、无崩溃、本地数据仍在
 #
 # 用法：
@@ -24,16 +24,25 @@ info(){ printf '       %s\n' "$1"; }
 FAILED=0
 
 say "A. 装配检查"
+if pm list packages 2>/dev/null | grep -q 'com.eta.afb'; then
+  ok "模块已安装 com.eta.afb"
+else
+  bad "模块未安装（adb install -r out/AntiFraudBlock-2.3.apk）"
+fi
+
+# LSPosed 2.2.1 的 lspctl 只有 status/stop，旧命令存在才用
 if "$LSPCTL" module show com.eta.afb 2>/dev/null | grep -q 'User 0: enabled'; then
   ok "模块已启用"
-else
+elif "$LSPCTL" module show com.eta.afb 2>/dev/null | grep -q 'disabled'; then
   bad "模块未启用（LSPosed → 反诈上报阻断 → 启用 + 勾手机管家）"
+else
+  info "本机 lspctl 不支持 module show，跳过状态查询（看下面 hook 日志）"
 fi
 
 if "$LSPCTL" scope list com.eta.afb 2>/dev/null | grep -q "$PKG"; then
   ok "作用域含 $PKG"
 else
-  bad "作用域缺 $PKG"
+  info "本机 lspctl 不支持 scope list，跳过（静态作用域 scope.list 已声明 $PKG）"
 fi
 
 am force-stop "$PKG" 2>/dev/null
@@ -55,29 +64,68 @@ while [ $i -lt 15 ]; do
   i=$((i+1))
 done
 
-echo "$LOG" | grep -q 'module loaded'            && ok "module loaded"                     || bad "未见 module loaded（模块没注入）"
-echo "$LOG" | grep -q 'AiDetectStatistics -> 9'  && ok "AiDetectStatistics 9 个方法已静默" || bad "AiDetectStatistics hook 缺失"
-echo "$LOG" | grep -q 'AiVoiceDetectDCSUtils -> 2' && ok "AiVoiceDetectDCSUtils 2 个方法已静默" || bad "DCS 上报 hook 缺失"
-echo "$LOG" | grep -q 'TrackApi.E -> 1 sink hooked' && ok "TrackApi.E 出口已挂" || bad "TrackApi.E 未挂"
-echo "$LOG" | grep -q 'hook class failed' && bad "有类 hook 失败（版本不匹配？看下方原文）" && echo "$LOG" | grep 'hook class failed' | info
-[ "$FAILED" = "0" ] && info "全部 3 处 hook 就位"
+echo "$LOG" | grep -q 'module loaded' && ok "module loaded" || bad "未见 module loaded（模块没注入）"
+echo "$LOG" | grep -q 'AiDetectStatistics -> .*method(s) hooked' \
+  && ok "AiDetectStatistics 已挂（$(echo "$LOG" | sed -n 's/.*AiDetectStatistics -> \([0-9]*\).*/\1/p' | head -1) 个方法）" \
+  || bad "AiDetectStatistics hook 缺失"
+echo "$LOG" | grep -q 'AiVoiceDetectDCSUtils -> 2 method(s) hooked' \
+  && ok "AiVoiceDetectDCSUtils 2 个方法已挂" || bad "DCS 上报 hook 缺失"
+if echo "$LOG" | grep -q 'TrackWrapper.track -> .*sink hooked'; then
+  ok "DRS TrackApi.track 出口已挂（17.7.x）"
+elif echo "$LOG" | grep -q 'TrackApi.E -> 1 sink hooked'; then
+  ok "nearx TrackApi.E 出口已挂（17.1.x）"
+else
+  bad "两代 TrackApi 出口都没挂"
+fi
+if echo "$LOG" | grep -q 'cloudscan app-list -> .*method(s) hooked'; then
+  ok "云查杀/广告识别的应用列表出口已挂"
+elif echo "$LOG" | grep -q 'hook cloudscan failed'; then
+  info "cloudscan 类不存在/不兼容，跳过（看下方原文）"
+  echo "$LOG" | grep 'hook cloudscan failed' | info
+else
+  bad "cloudscan 应用列表 hook 缺失"
+fi
+echo "$LOG" | grep -q 'hook class failed' && { bad "有类 hook 失败（版本不匹配？看下方原文）"; echo "$LOG" | grep 'hook class failed' | info; }
+
+if dumpsys package com.eta.afb 2>/dev/null | grep -q 'com.eta.afb.XposedService'; then
+  ok "XposedProvider 已注册（authority com.eta.afb.XposedService）"
+else
+  bad "缺少 XposedProvider：模块 App 收不到框架 binder，远程配置写不进去"
+fi
+
+if echo "$LOG" | grep -q 'src=remote'; then
+  ok "开关来自 LSPosed RemotePreferences（src=remote）"
+  echo "$LOG" | grep -m1 'settings loaded:' | sed 's/.*settings loaded: /       /'
+elif echo "$LOG" | grep -q 'src=snapshot'; then
+  info "远程能力不可用，降级读页面快照 afb.conf（检查模块 App 是否连上 XposedService）"
+else
+  bad "hook 没有加载到任何开关来源"
+fi
+
+[ "$FAILED" = "0" ] && info "hook 装配检查通过"
 
 if [ "${1:-}" = "--active" ]; then
   say "B. 主动触发（打开反诈页）"
   am start -a "$ACTION_HOME" -n "$ACT" >/dev/null 2>&1
   sleep 8
   # LSPosed 会把模块日志镜像成一条 LSPosedFramework 行，必须刨掉，否则命中数翻倍
-  HITS=$(logcat -d 2>/dev/null | grep 'AntiFraudBlock.*hit silence' | grep -v 'LSPosedFramework' | wc -l)
+  HITS=$(logcat -d 2>/dev/null | grep -E 'AntiFraudBlock: hit ' | grep -v 'LSPosedFramework' | wc -l)
   if [ "$HITS" -gt 0 ]; then
     ok "命中 $HITS 次拦截"
-    logcat -d 2>/dev/null | grep 'AntiFraudBlock.*hit silence' | grep -v 'LSPosedFramework' | tail -5 | sed 's/^/       /'
+    logcat -d 2>/dev/null | grep -E 'AntiFraudBlock: hit ' | grep -v 'LSPosedFramework' | tail -5 | sed 's/^/       /'
   else
     info "本轮没命中（反诈页没产生埋点也算正常，可手动切一下反诈页的开关再跑）"
   fi
   BLOCKED=$(logcat -d 2>/dev/null | grep 'AntiFraudBlock.*blocked track event' | grep -v 'LSPosedFramework' | wc -l)
   info "sink 层吞掉的 TrackApi 事件：$BLOCKED 条"
-  if [ "$BLOCKED" = "0" ]; then
-    info "（为 0 说明反诈埋点在 AiDetectStatistics 层就被挡在源头，根本没走到 TrackApi.E，属正常）"
+  logcat -d 2>/dev/null | grep 'AntiFraudBlock.*blocked track event' | grep -v 'LSPosedFramework' | tail -5 | sed 's/^/       /'
+  BLANKED=$(logcat -d 2>/dev/null | grep 'AntiFraudBlock.*blanked app list' | grep -v 'LSPosedFramework' | wc -l)
+  info "清空包名集合的次数：$BLANKED 次（打开病毒扫描页点“重新扫描”可触发）"
+  logcat -d 2>/dev/null | grep 'AntiFraudBlock.*blanked app list' | grep -v 'LSPosedFramework' | tail -5 | sed 's/^/       /'
+  CHANGED=$(logcat -d 2>/dev/null | grep 'AntiFraudBlock.*settings changed' | grep -v 'LSPosedFramework' | wc -l)
+  if [ "$CHANGED" -gt 0 ]; then
+    ok "运行中开关变更 $CHANGED 次（页面热生效）"
+    logcat -d 2>/dev/null | grep 'AntiFraudBlock.*settings changed' | grep -v 'LSPosedFramework' | tail -3 | sed 's/^/       /'
   fi
 fi
 
@@ -96,7 +144,7 @@ else
 fi
 
 for f in /data/oplus/os/phonemanager/fraud_detect_apps.xml /data/oplus/os/phonemanager/fraud_parameters.json; do
-  [ -f "$f" ] && info "本地反诈配置在：$f" 
+  [ -f "$f" ] && info "本地反诈配置在：$f"
 done
 
 say "结论"
@@ -107,3 +155,4 @@ else
   printf '  \033[31m有检查未通过，看上面 FAIL 行\033[0m\n'
   exit 1
 fi
+

@@ -14,13 +14,17 @@ set -e
 cd "$(dirname "$0")"
 
 OUT_DIR=${1:-out}
-VER=2.0
+VER=2.4
 
 SDK=${ANDROID_SDK:-/opt/android-sdk}
 BT="$SDK/build-tools/36.0.0"
 AJAR="$SDK/platforms/android-34/android.jar"
+[ -f "$AJAR" ] || AJAR="$SDK/platforms/android-35/android.jar"
+[ -f "$AJAR" ] || AJAR="$SDK/platforms/android-36/android.jar"
 AAR=libs/libxposed-102.aar
 XAPI=libs/aar/classes.jar
+SAAR=libs/libxposed-service-102.aar
+SXAPI=libs/aar-service/classes.jar
 
 mkdir -p libs "$OUT_DIR"
 
@@ -32,16 +36,30 @@ if [ ! -f "$XAPI" ]; then
   mkdir -p libs/aar && (cd libs/aar && unzip -o -q "../$(basename $AAR)")
 fi
 
+if [ ! -f "$IXAPI" ]; then
+  echo "[0/6] fetch libxposed interface 102"
+  [ -f "$IAAR" ] || curl -sSL -o "$IAAR" \
+    https://repo1.maven.org/maven2/io/github/libxposed/interface/102.0.0/interface-102.0.0.aar
+  mkdir -p libs/aar-interface && (cd libs/aar-interface && unzip -o -q "../$(basename $IAAR)")
+fi
+
+if [ ! -f "$SXAPI" ]; then
+  echo "[0/6] fetch libxposed service 102"
+  [ -f "$SAAR" ] || curl -sSL -o "$SAAR" \
+    https://repo1.maven.org/maven2/io/github/libxposed/service/102.0.0/service-102.0.0.aar
+  mkdir -p libs/aar-service && (cd libs/aar-service && unzip -o -q "../$(basename $SAAR)")
+fi
+
 rm -rf build2
 mkdir -p build2/classes
 
 echo "[1/6] javac"
-javac -encoding UTF-8 --release 11 -classpath "$AJAR:$XAPI" \
+javac -encoding UTF-8 --release 11 -classpath "$AJAR:$XAPI:$SXAPI:$IXAPI" \
   -d build2/classes $(find module/src -name '*.java')
 
 echo "[2/6] d8"
 "$BT/d8" --lib "$AJAR" --classpath "$XAPI" --min-api 33 \
-  --output build2 $(find build2/classes -name '*.class')
+  --output build2 $(find build2/classes -name '*.class') "$SXAPI" "$IXAPI"
 
 echo "[3/6] aapt2"
 aapt2 compile --dir module/res -o build2/res.zip
